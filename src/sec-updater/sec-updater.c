@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012 Andreas Steffen
+ * Copyright (C) 2012-2017 Andreas Steffen
  * HSR Hochschule fuer Technik Rapperswil
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -22,18 +22,17 @@
 #include <syslog.h>
 #include <time.h>
 #include <sys/stat.h>
-
-#include "imv_os_state.h"
+#include <stdlib.h>
 
 #include <library.h>
 #include <utils/debug.h>
 
-typedef enum pacman_state_t pacman_state_t;
+typedef enum sec_update_state_t sec_update_state_t;
 
-enum pacman_state_t {
-	PACMAN_STATE_BEGIN_PACKAGE,
-	PACMAN_STATE_VERSION,
-	PACMAN_STATE_END_PACKAGE
+enum sec_update_state_t {
+	SEC_UPDATE_STATE_BEGIN_PACKAGE,
+	SEC_UPDATE_STATE_VERSION,
+	SEC_UPDATE_STATE_END_PACKAGE
 };
 
 typedef struct stats_t stats_t;
@@ -44,8 +43,6 @@ struct stats_t {
 	int packages;
 	int new_packages;
 	int new_versions;
-	int updated_versions;
-	int deleted_versions;
 };
 
 /**
@@ -55,9 +52,9 @@ static int debug_level = 1;
 static bool stderr_quiet = TRUE;
 
 /**
- * pacman dbg function
+ * sec_update dbg function
  */
-static void pacman_dbg(debug_t group, level_t level, char *fmt, ...)
+static void sec_update_dbg(debug_t group, level_t level, char *fmt, ...)
 {
 	int priority = LOG_INFO;
 	char buffer[8192];
@@ -106,7 +103,7 @@ static void usage(void)
 {
 	printf("Parses package information files from Debian/Ubuntu repositories and\n");
 	printf("stores the extracted information in the database used by the OS IMV.\n\n");
-	printf("ipsec pacman --product <name> --file <filename> [--security]\n\n");
+	printf("ipsec sec_update --product <name> --file <filename> [--security]\n\n");
 	printf("  --help               print usage information\n");
 	printf("  --product <name>     name of the Debian/Ubuntu release, as stored in the DB\n");
 	printf("  --file <filename>    package information file to parse\n");
@@ -120,11 +117,9 @@ static void usage(void)
 static bool update_database(database_t *db, char *package, char *version,
 							bool security, stats_t *stats)
 {
-	char *cur_version, *version_update = NULL, *version_delete = NULL;
-	int cur_security, security_update = 0, security_delete = 0;
-	int pac_id = 0, vid = 0, vid_update = 0, vid_delete = 0;
-	u_int cur_time;
-	bool add_version = TRUE;
+	int pid = 0, vid = 0, count = 0, sec_flag;
+	bool first = TRUE, found = FALSE, set_sec_flag = FALSE;
+	char *release;
 	enumerator_t *e;
 
 	/* increment package count */
@@ -137,141 +132,69 @@ static bool update_database(database_t *db, char *package, char *version,
 	{
 		return FALSE;
 	}
-	if (!e->enumerate(e, &pac_id))
+	if (!e->enumerate(e, &pid))
 	{
-		pac_id = 0;
+		pid = 0;
 	}
 	e->destroy(e);
 
-	if (!pac_id && security)
+	if (!pid)
 	{
-		if (db->execute(db, &pac_id, "INSERT INTO packages (name) VALUES (?)",
+		/*if (db->execute(db, &pid, "INSERT INTO packages (name) VALUES (?)",
 						DB_TEXT, package) != 1)
 		{
 			fprintf(stderr, "could not store package '%s' to database\n",
 							 package);
 			return FALSE;
 		}
+		fprintf(stderr, "  %s\n", package); */
 		stats->new_packages++;
-	}
-
-	/* check for package versions already in database */
-	e = db->query(db,
-			"SELECT id, release, security, time FROM versions "
-			"WHERE package = ? AND product = ?", DB_INT, pac_id,
-			 DB_INT, stats->product, DB_INT, DB_TEXT, DB_INT, DB_UINT);
-	if (!e)
-	{
-		return FALSE;
-	}
-
-	while (e->enumerate(e, &vid, &cur_version, &cur_security, &cur_time))
-	{
-		if (streq(version, cur_version))
-		{
-			/* already in data base */
-			add_version = FALSE;
-			break;
-		}
-		else if (stats->release >= cur_time)
-		{
-			if (security)
-			{
-				if (cur_security)
-				{
-					vid_update = vid;
-					version_update = strdup(cur_version);
-					security_update = cur_security;
-				}
-				else
-				{
-					vid_delete = vid;
-					version_delete = strdup(cur_version);
-					security_delete = cur_security;
-				}
-			}
-			else
-			{
-				if (!cur_security)
-				{
-					vid_update = vid;
-					version_update = strdup(cur_version);
-					security_update = cur_security;
-				}
-			}
-		}
-		else
-		{
-			if (security == cur_security)
-			{
-				add_version = FALSE;
-			}
-		}
-	}
-	e->destroy(e);
-
-	if ((!vid && !security) || (vid && !add_version))
-	{
-		free(version_update);
-		free(version_delete);
-		return TRUE;
-	}
-
-	if ((!vid && security) || (vid && !vid_update))
-	{
-		printf("%s (%s) %s\n", package, version, security ? "[s]" : "");
-
-		if (db->execute(db, &vid,
-			"INSERT INTO versions "
-			"(package, product, release, security, time) "
-			"VALUES (?, ?, ?, ?, ?)", DB_INT, pac_id, DB_INT, stats->product,
-			DB_TEXT, version, DB_INT, security, DB_INT, stats->release) != 1)
-		{
-			fprintf(stderr, "could not store version '%s' to database\n",
-							 version);
-			free(version_update);
-			free(version_delete);
-			return FALSE;
-		}
-		stats->new_versions++;
 	}
 	else
 	{
-		printf("%s (%s) %s updated by\n",
-			   package, version_update, security_update ? "[s]" : "");
-		printf("%s (%s) %s\n", package, version, security ? "[s]" : "");
-
-		if (db->execute(db, NULL,
-			"UPDATE versions SET release = ?, time = ? WHERE id = ?",
-			DB_TEXT, version, DB_INT, stats->release, DB_INT, vid_update) <= 0)
+		/* check if package version is already in database */
+		e = db->query(db,
+			"SELECT id, release, security FROM versions "
+			"WHERE product = ? AND package = ?",
+			 DB_INT, stats->product,  DB_INT, pid, DB_INT, DB_TEXT, DB_INT);
+		if (!e)
 		{
-			fprintf(stderr, "could not update version '%s' to database\n",
-							 version);
-			free(version_update);
-			free(version_delete);
 			return FALSE;
 		}
-		stats->updated_versions++;
-	}
-
-	if (vid_delete)
-	{
-		printf("%s (%s) %s deleted\n",
-			   package, version_delete, security_delete ? "[s]" : "");
-			if (db->execute(db, NULL,
-			"DELETE FROM  versions WHERE id = ?",
-			DB_INT, vid_delete) <= 0)
+		while (e->enumerate(e, &vid, &release, &sec_flag))
 		{
-			fprintf(stderr, "could not delete version '%s' from database\n",
-							 version_delete);
-			free(version_update);
-			free(version_delete);
-			return FALSE;
+			char command[BUF_LEN];
+			char found_char = ' ';
+
+			if (first)
+			{
+				printf("%s\n", package);
+				first = FALSE;
+			}
+			if (streq(version, release))
+			{
+				found = TRUE;
+				found_char = '*';
+			}
+			else if (security)
+			{
+				 snprintf(command, BUF_LEN, "dpkg --compare-versions %s lt %s",
+											 release, version);
+				if (system(command) == 0)
+				{
+					found_char = '!';
+				}
+			}
+			printf("  %c%s %s\n", found_char , sec_flag ? "s" : " ", release);
 		}
-		stats->deleted_versions++;
+		e->destroy(e);
+
+		if (!found && !first)
+		{
+			printf("  +  %s\n", version);
+			stats->new_versions++;
+		}
 	}
-	free(version_update);
-	free(version_delete);
 
 	return TRUE;
 }
@@ -282,7 +205,7 @@ static bool update_database(database_t *db, char *package, char *version,
 static void process_packages(char *filename, char *product, bool security)
 {
 	char *uri, line[BUF_LEN], *pos, *package = NULL, *version = NULL;
-	pacman_state_t pacman_state;
+	sec_update_state_t state;
 	enumerator_t *e;
 	database_t *db;
 	int pid;
@@ -306,10 +229,10 @@ static void process_packages(char *filename, char *product, bool security)
 	}
 
 	/* connect package database */
-	uri = lib->settings->get_str(lib->settings, "pacman.database", NULL);
+	uri = lib->settings->get_str(lib->settings, "sec-update.database", NULL);
 	if (!uri)
 	{
-		fprintf(stderr, "database URI pacman.database not set\n");
+		fprintf(stderr, "database URI sec-update.database not set\n");
 		fclose(file);
 		exit(EXIT_FAILURE);
 	}
@@ -346,16 +269,16 @@ static void process_packages(char *filename, char *product, bool security)
 		stats.product = pid;
 	}
 
-	pacman_state = PACMAN_STATE_BEGIN_PACKAGE;
+	state = SEC_UPDATE_STATE_BEGIN_PACKAGE;
 
 	while (fgets(line, sizeof(line), file))
 	{
 		/* set read pointer to beginning of line */
 		pos = line;
 
-		switch (pacman_state)
+		switch (state)
 		{
-			case PACMAN_STATE_BEGIN_PACKAGE:
+			case SEC_UPDATE_STATE_BEGIN_PACKAGE:
 				pos = strstr(pos, "Package: ");
 				if (!pos)
 				{
@@ -367,10 +290,10 @@ static void process_packages(char *filename, char *product, bool security)
 				if (pos)
 				{
 					package = strndup(package, pos - package);
-					pacman_state = PACMAN_STATE_VERSION;
+					state = SEC_UPDATE_STATE_VERSION;
 				}
 				break;
-			case PACMAN_STATE_VERSION:
+			case SEC_UPDATE_STATE_VERSION:
 				pos = strstr(pos, "Version: ");
 				if (!pos)
 				{
@@ -382,10 +305,10 @@ static void process_packages(char *filename, char *product, bool security)
 				if (pos)
 				{
 					version = strndup(version, pos - version);
-					pacman_state = PACMAN_STATE_END_PACKAGE;
+					state = SEC_UPDATE_STATE_END_PACKAGE;
 				}
 				break;
-			case PACMAN_STATE_END_PACKAGE:
+			case SEC_UPDATE_STATE_END_PACKAGE:
 				if (*pos != '\n')
 				{
 					continue;
@@ -399,15 +322,15 @@ static void process_packages(char *filename, char *product, bool security)
 					db->destroy(db);
 					exit(EXIT_FAILURE);
 				}
-				pacman_state = PACMAN_STATE_BEGIN_PACKAGE;
+				state = SEC_UPDATE_STATE_BEGIN_PACKAGE;
 		}
 	}
-	switch (pacman_state)
+	switch (state)
 	{
-		case PACMAN_STATE_END_PACKAGE:
+		case SEC_UPDATE_STATE_END_PACKAGE:
 			free(version);
 			/* fall-through */
-		case PACMAN_STATE_VERSION:
+		case SEC_UPDATE_STATE_VERSION:
 			free(package);
 			break;
 		default:
@@ -416,10 +339,8 @@ static void process_packages(char *filename, char *product, bool security)
 	fclose(file);
 	db->destroy(db);
 
-	printf("processed %d packages, %d new packages, %d new versions, "
-		   "%d updated versions, %d deleted versions\n",
-			stats.packages, stats.new_packages, stats.new_versions,
-			stats.updated_versions, stats.deleted_versions);
+	printf("processed %d packages, %d new packages, %d new versions\n",
+			stats.packages, stats.new_packages, stats.new_versions);
 }
 
 static void do_args(int argc, char *argv[])
@@ -477,18 +398,18 @@ static void do_args(int argc, char *argv[])
 int main(int argc, char *argv[])
 {
 	/* enable attest debugging hook */
-	dbg = pacman_dbg;
-	openlog("pacman", 0, LOG_DEBUG);
+	dbg = sec_update_dbg;
+	openlog("sec-update", 0, LOG_DEBUG);
 
 	atexit(cleanup);
 
 	/* initialize library */
-	if (!library_init(NULL, "pacman"))
+	if (!library_init(NULL, "sec-update"))
 	{
 		exit(SS_RC_LIBSTRONGSWAN_INTEGRITY);
 	}
 	if (!lib->plugins->load(lib->plugins,
-			lib->settings->get_str(lib->settings, "pacman.load", "sqlite")))
+			lib->settings->get_str(lib->settings, "sec-update.load", "sqlite")))
 	{
 		exit(SS_RC_INITIALIZATION_FAILED);
 	}

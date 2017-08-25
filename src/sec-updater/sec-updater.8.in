@@ -1,0 +1,69 @@
+.TH SEC-UPDATER 8 "2017-08-25" "@PACKAGE_VERSION@" "strongSwan"
+.
+.SH "NAME"
+.
+sec-updater \- Extracts security updates from Debian/Ubuntu repositories
+.
+.SH "SYNOPSIS"
+.
+.SY "sec-updater"
+.OP \-\-debug level
+.OP \-\-quiet
+.OP \-\-security
+.BI \-\-product " name"
+.BI \-\-file " filename"
+.YS
+.
+.SY "sec-updater"
+.B \-h
+|
+.B \-\-help
+.YS
+.
+.SH "DESCRIPTION"
+.
+.B sec-updater
+extracts information about software package installation, update or removal
+events from the apt history log and stores the software events in an SQLite
+database. The retrieved history information is then merged and made consistent
+with the actual list of installed software packages obtained with dpkg-query.
+.
+.SH "OPTIONS"
+.
+.TP
+.B "\-h, \-\-help"
+Prints usage information and a short summary of the available commands.
+.TP
+.BI "\-v, \-\-debug " level
+Set debug level, default: 2.
+.TP
+.B "\-q, \-\-quiet"
+Disable debug output to stderr.
+.TP
+.B "\-s, \-\-security"
+Apply command to installed software packages, only.
+.TP
+.BI "\-p, \-\-product " name
+Apply command to removed software packages, only.
+.TP
+.BI "\-f, \-\-file " filename
+Generate ISO 19770-2:2015 SWID tags with full file information (possible for
+installed software packages, only).
+.
+.SH "CONFIGURATION"
+.
+The following parameter must be configured in strongswan.conf:
+.P
+ sec-updater {
+    database = sqlite:///etc/pts/config.db
+ }
+.P
+.
+.SH "FILES"
+.
+@PKGDATADIR@/templates/database/sec-updater/sw_collector_tables.sql
+.
+.SH "SEE ALSO"
+.
+.BR strongswan.conf (5)
+
